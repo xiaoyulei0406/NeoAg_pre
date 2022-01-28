@@ -1,0 +1,231 @@
+---
+title: "Summary of somatic mutations from XXX project"
+output: html_document
+## Usage and Options: 
+# example as follows:
+#Rscript -e "rmarkdown::render('maf_reports.Rmd')" -i /data/GBM/mafcombine/ -o /data/GBM/maf_reports/
+
+########
+#R version:R version 3.6.1 (2019-07-05)
+#dplyr:1.0.5
+#knitr:1.31
+#ggplot2:3.3.3
+#gtable:0.3.0
+#grid: 3.6.1
+#maftools:2.2.10
+#RColorBrewer:1.1.2
+########
+---
+
+```{r setup, include=FALSE, echo=F}
+suppressMessages(library(dplyr))
+suppressMessages(library(knitr))
+suppressMessages(library(reshape2))
+suppressMessages(library(ggplot2))
+suppressMessages(library(gtable))
+suppressMessages(library(maftools))
+suppressMessages(library(gridExtra))
+suppressMessages(library(grid))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(optparse))
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+## Introduction
+This report is on the summary of the mutation calling result from Ziopharm bioinformatics team.
+
+Single nucleiotide variats (SNVs) and insersitions/deletions (indels) were detected using Mutect2.
+
+```{r, eval=F, echo=F}
+
+#Top 20 FLAGS - https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4267152/
+print("FLAGS genes to be ignored:")
+flags = c("TTN", "MUC16", "OBSCN", "AHNAK2", "SYNE1", "FLG", "MUC5B","DNAH17", "PLEC", "DST", "SYNE2", "NEB", "HSPG2", "LAMA5", "AHNAK","HMCN1", "USH2A", "DNAH11", "MACF1", "MUC17","FCGBP")
+```
+The following are the required fields in the input MAF file by maftools:
+  
+* Hugo_Symbol
+* Chromosome
+* Start_Position
+* End_Position
+* Reference_Allele
+* Tumor_Seq_Allele2
+* Variant_Classification(Frame_Shift_Del, Missense_Mutation etc, the "exonicfunc" column in mdacc's result)
+* Variant_Type (SNP, DNP, TNP, ONP, INS, DEL)
+* Tumor_Sample_Barcode
+
+The following tabs are optional
+* t_vaf (allele frequency)
+* tumor_alt_count (count of alternate alleles in tumor)
+* tumor_ref_count (count of reference alleles in tumor)
+* AAannotation (annotation for amino acid change )
+
+
+```{r, echo=F}
+option_list <- list( 
+    make_option(c("-i", "--input_dir"), action="store", type="character",
+        help="Input directory"),
+    make_option(c("-o", "--out_dir"), action="store", type="character",
+        help="Output directory")
+		)
+message(option_list)
+opt <- parse_args(OptionParser(option_list=option_list))
+out_dir <- opt$out_dir
+input_dir <-opt$input_dir
+Sys.getenv("RSTUDIO_PANDOC")
+if (!dir.exists(out_dir)){
+    dir.create(out_dir)
+  } else {
+    print("Dir already exists!")
+  }
+
+print(opt$input_file)
+print(out_dir)
+merged<-data.frame(matrix(ncol=62, nrow=0))
+colnames(merged)<-c('Chr','Start','End','Ref','Alt','Func.refGene','Gene.refGene','GeneDetail.refGene','ExonicFunc.refGene',
+                    'AAChange.refGene','cytoBand','Callers','NCallers','tumor_vaf','tumor_ref_count','tumor_alt_count',
+                    'normal_vaf','normal_ref_count','normal_alt_count','Tumor_Sample_Barcode','snp142','ExAC_ALL','ExAC_AFR','ExAC_AMR','ExAC_EAS',
+                    'ExAC_FIN',',ExAC_NFE','ExAC_OTH','ExAC_SAS','avsnp147')
+annovarFiles=list.files(input_dir, pattern = "*.combine.all.txt", full.names = TRUE)
+
+
+for(annovarFile in annovarFiles){
+  annovarNameTMP<- unlist(strsplit(annovarFile, split = '/'))[length(unlist(strsplit(annovarFile, split = '/')))]
+  annovarName=gsub(".combine.all.txt", "", annovarNameTMP)
+  annovar_file=read.table(annovarFile,skip = 1, header = FALSE,sep = "\t")
+  colnames(annovar_file)<-c('Chr','Start','End','Ref','Alt','Func.refGene','Gene.refGene','GeneDetail.refGene','ExonicFunc.refGene',
+                    'AAChange.refGene','cytoBand','Callers','NCallers','tumor_vaf','tumor_ref_count','tumor_alt_count',
+                   'normal_vaf','normal_ref_count','normal_alt_count','Tumor_Sample_Barcode','snp142','ExAC_ALL','ExAC_AFR','ExAC_AMR','ExAC_EAS',
+                    'ExAC_FIN',',ExAC_NFE','ExAC_OTH','ExAC_SAS','avsnp147') 
+  write.table(annovar_file,paste(out_dir,annovarName,".refGene.hg19_multianno.combine.txt",sep = ""),sep="\t",quote=F,row.names = F)
+  merged<-rbind(merged,annovar_file)
+  
+
+}
+write.table(merged,paste(out_dir,"refGene.hg19_multianno.filtered.all.txt",sep = ""),sep="\t",quote=F,row.names = F)
+#filenames=paste(out_dir,"*.refGene.hg19_multianno.combine.txt",sep="")
+filenames = Sys.glob(paste0(out_dir,"*.refGene.hg19_multianno.combine.txt")) #convert to MAFs using annovarToMaf
+annovar_mafs = lapply(filenames, annovarToMaf) #convert to MAFs using annovarToMaf
+
+annovar_mafs = data.table::rbindlist(l = annovar_mafs, fill = TRUE) #Merge into single MAF
+
+#names(annovar_mafs) <- c('Chr','Start','End','Ref','Alt','Tumor_Sample_Barcode','Hugo_Symbol','Variant_Classification',
+#                               'tx','exon','txChange','aaChange','Variant_Type','sample_id','Func.refGene','Gene.refGene','GeneDetail.refGene','ExonicFunc.refGene',
+#                               'AAChange.refGene','cytoBand','snp142','tumor_vaf','tumor_ref_count','tumor_alt_count','normal_vaf',
+#                               'normal_ref_count','normal_alt_count')
+                               
+write.table(annovar_mafs,paste(out_dir,"maf.txt",sep = ""),sep="\t",quote=F,row.names = F)
+
+print("TMB summary: number of nonsynonymous mutations only:")
+annovar_mafsEx_nonsys=dplyr::filter(annovar_mafs,ExonicFunc.refGene=="nonsynonymous SNV")
+kable(table(annovar_mafsEx_nonsys[,c("Tumor_Sample_Barcode","Variant_Type")]))
+
+#A overlook with dbSNP annotations
+print("Summary of Number of Mutations with dbSNP Annotation and All Mutations:")
+annovar_mafsEx_sys_rs=dplyr::filter(annovar_mafs,(snp142!="."| avsnp147!="."))
+dbMut<-rbind(table(annovar_mafsEx_sys_rs[,c("Tumor_Sample_Barcode")]),table(annovar_mafs[,c("Tumor_Sample_Barcode")]))
+rownames(dbMut)<-c("Number_of_dbSNPmutations","Number_of_allmutations")
+tdbMut<-t(dbMut)
+tdbMut<-transform(tdbMut,Fraction_of_dbSNPmutations = Number_of_dbSNPmutations/Number_of_allmutations)
+kable(tdbMut)
+
+## Mutation Summary
+#create a tiny matrix
+newmerged<-data.frame(matrix(ncol=13, nrow=0))
+colnames(newmerged)<-c('Hugo_Symbol','Chromosome', 'Start_Position', 'End_Position', 'Reference_Allele', 'Tumor_Seq_Allele2','Variant_Classification', 'Variant_Type', 'Tumor_Sample_Barcode', 't_vaf','AAChange', 't_ref_count', 't_alt_count')
+
+#change columns name
+colnames(annovar_mafs)[which(names(annovar_mafs)== "tumor_vaf")] <- "t_vaf"
+
+df<-annovar_mafs
+
+df <- as.data.frame(df)
+df$t_vaf<-as.numeric(df$t_vaf)
+df$tumor_alt_count<-as.numeric((df$tumor_alt_count))
+
+## Plot VAF and t_alt_count Distribution
+
+my_theme = theme(axis.title.x = element_text(size=14, face="bold"),
+                 axis.text.x = element_text(size=12, face="bold"),
+                 axis.title.y = element_text(size=14, face="bold"),
+                 axis.text.y = element_text(size=12, face="bold"),
+                 plot.title = element_text(hjust = 0.5, size = 14, face="bold"))
+
+
+print("Histogram of Tumor Alteration Counts")
+ggplot(df, aes(x=tumor_alt_count)) + geom_histogram(color="darkblue", fill="lightblue", bins=100)+labs(x="Tumor Alteration Count", y="Freqeuency", title="Histogram of Tumor Alternation Counts")+my_theme+xlim(0,200)
+
+print("Histogram of Tumor Allele Frequencies")
+
+ggplot(df, aes(x=t_vaf)) + geom_histogram(color="darkblue", fill="lightblue", bins=100)+labs(x="Tumor variant allele frequency (tumor VAF)", y="Freqeuency", title="Tumor Allele Frequencies")+my_theme
+```
+
+```{r, echo=F}
+
+## Mutation Summary
+col1=RColorBrewer::brewer.pal(n = 8, 'Accent')
+names(col1) = c("Frame_Shift_Ins","Nonsense_Mutation","In_Frame_Del","Frame_Shift_Del","Missense_Mutation","Multi_Hit","Splice_Site")
+print("Mutation Summary")
+
+allannovar<-paste(out_dir,"refGene.hg19_multianno.filtered.all.txt",sep = "")
+mf<-annovarToMaf(allannovar, Center = NULL, refBuild = "hg19",
+                 tsbCol = NULL, table = "refGene", basename = NULL, sep = "\t",
+                 MAFobj = T, sampleAnno = NULL)
+plotmafSummary(mf,color = col1)
+
+write.table(mf@data,paste(out_dir,"maf2.txt",sep = ""),sep="\t",quote=F,row.names = F)
+## Oncoplot (landscape of top 50 mutated genes)
+```
+
+```{r, echo=F, fig.height = 15, fig.width = 7}
+print("oncoplot Summary")
+
+#Top FLAGS - https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4267152/
+#flags = c("TTN", "MUC16", "OBSCN", "AHNAK2", "SYNE1", "FLG", "MUC5B","DNAH17", "PLEC", "DST", "SYNE2", "NEB", "HSPG2", "LAMA5", "AHNAK","HMCN1", "USH2A", "DNAH11", "MACF1","MUC17","FCGBP","ABCA13","DNAH5","KMT2C","CUBN","STAB1","STAB2","PCLO")
+
+##
+oncoplot(mf, top =20,genesToIgnore = c("TTN", "MUC16", "OBSCN", "AHNAK2", "SYNE1", "FLG", "MUC5B","DNAH17", "PLEC", "DST","SYNE2", "NEB", "HSPG2", "LAMA5", "AHNAK","HMCN1", "USH2A", "DNAH11", "MACF1","MUC17","FCGBP","ABCA13","DNAH5","KMT2C","CUBN","STAB1","STAB2","PCLO"),
+         removeNonMutated = TRUE, colors = col1,
+)
+```
+
+```{r, echo=F}
+
+## Oncostrip of TP53, KRAS and EGFR
+oncostrip(mf,removeNonMutated=F, genes=c("TP53","IDH1","EGFR"),showTumorSampleBarcodes = F, colors = col1,
+          )
+
+
+## Allele Frequency Distrubution
+#change columns name
+print("Allele Frequency Distrubution")
+colnames(mf@data)[which(names(mf@data)== "tumor_vaf")] <- "t_vaf"
+
+plotVaf(mf, vafCol = "i_TumorVAF_WU", top=20)
+
+## Transitions and transversions
+print("Transitions and transversions")
+
+titv=titv(mf, plot=F, useSyn = T)
+plotTiTv(titv)
+
+## Lollipop plots for Amino Acid changes of TP53
+#change columns name
+colnames(mf@data)[which(names(mf@data)== "aaChange")] <- "AAChange"
+print("Lollipop plots for Amino Acid changes of TP53")
+
+lollipopPlot(mf, gene = "TP53")
+
+## Compare the number of mutations with TCGA
+print("Compare the number of mutations with TCGA")
+mut.load<-tcgaCompare(mf, cohortName = "XXX sample")
+
+mut.load
+
+```
+
+
+
+
